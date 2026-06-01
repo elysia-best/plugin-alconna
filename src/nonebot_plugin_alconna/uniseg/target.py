@@ -494,6 +494,11 @@ async def select_mail(target: "Target", bot: Bot):
     return not hasattr(bot, "platform") or bot.platform == "mail"
 
 
+@_register(SupportScope.matrix)
+async def select_matrix(target: "Target", bot: Bot):
+    return not target.channel and bot.adapter.get_name() == SupportAdapter.matrix
+
+
 @_register(SupportScope.heybox)
 async def select_heybox(target: "Target", bot: Bot):
     if not target.channel:

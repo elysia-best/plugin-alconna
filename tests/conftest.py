@@ -1,9 +1,17 @@
 import os
+from pathlib import Path
 from typing import Any
 
 import nonebot
+import nonebot.adapters
 import pytest
+
+nonebot.adapters.__path__.append(
+    str((Path(__file__).parent.parent / ".." / "adapter-matrix" / "nonebot" / "adapters").resolve())
+)
+
 from nonebot.adapters.discord import Adapter as DiscordAdapter
+from nonebot.adapters.matrix import Adapter as MatrixAdapter
 from nonebot.adapters.onebot.v11 import Adapter as Onebot11Adapter
 from nonebot.adapters.onebot.v12 import Adapter as Onebot12Adapter
 
@@ -43,6 +51,7 @@ async def after_nonebot_init(after_nonebot_init: None):
     driver = nonebot.get_driver()
     driver.register_adapter(QQAdapter)
     driver.register_adapter(DiscordAdapter)
+    driver.register_adapter(MatrixAdapter)
     driver.register_adapter(Onebot11Adapter)
     driver.register_adapter(Onebot12Adapter)
     driver.register_adapter(SatoriAdapter)

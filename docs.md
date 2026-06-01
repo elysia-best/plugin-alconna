@@ -9,7 +9,13 @@
 ### 安装
 
 ```shell
-pip install nonebot-plugin-alconna
+uv add nonebot-plugin-alconna
+```
+
+若你要在当前阶段使用 Matrix 适配器，还需要额外安装：
+
+```shell
+uv add "nonebot-adapter-matrix @ git+https://github.com/elysia-best/adapter-matrix.git@master"
 ```
 
 或
@@ -261,6 +267,8 @@ async def handle_test4(qux: Query[bool] = Query("baz.qux", False)):
 ### 跨平台适配
 
 `uniseg` 模块属于 `nonebot-plugin-alconna` 的子插件，其提供了一套通用的消息组件，用于在 `nonebot-plugin-alconna` 下构建通用消息.
+
+当前已支持 Matrix 适配器（`nonebot.adapters.matrix`）。Matrix 的 v1 支持范围包括文本、用户提及、回复、图片/文件/音频/视频、发送、撤回与新增表情响应；暂不包含目标拉取、消息编辑、删除表情响应与完整样式回传。
 
 #### 通用消息段
 
