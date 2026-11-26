@@ -8,6 +8,10 @@ from nonebot.adapters.onebot.v11 import MessageSegment
 from nonebot.adapters.onebot.v12 import Adapter as Onebot12Adapter
 from nonebot.adapters.onebot.v12 import Bot as Onebot12Bot
 from nonebot.adapters.qq import Adapter as QQAdapter
+from nonebot.adapters.matrix import Adapter as MatrixAdapter
+from nonebot.adapters.matrix import Bot as MatrixBot
+from nonebot.adapters.matrix.api.model import WhoamiResponse
+from nonebot.adapters.matrix.config import BotInfo
 from nonebot.adapters.qq import Bot as QQBot
 from nonebot.adapters.satori import Adapter as SatoriAdapter
 from nonebot.adapters.satori import Bot as SatoriBot
@@ -36,9 +40,22 @@ async def test_bots(app: App):
         onebot12_bot = ctx.create_bot(
             base=Onebot12Bot, adapter=onebot12_adapter, self_id="5", platform="qq", impl="mock"
         )
+        matrix_adapter = get_adapter(MatrixAdapter)
+        matrix_bot = ctx.create_bot(
+            base=MatrixBot,
+            adapter=matrix_adapter,
+            self_id="@bot:example.org",
+            bot_info=BotInfo(
+                homeserver="https://matrix.example.org",
+                access_token="test-token",
+                user_id="@bot:example.org",
+            ),
+            self_info=WhoamiResponse(user_id="@bot:example.org"),
+        )
 
         assert await Target("0", scope=SupportScope.qq_client).select() in (satori_bot_cc, onebot11_bot, onebot12_bot)
         assert await Target("0", scope=SupportScope.qq_api).select() in (satori_bot_qq, qq_bot)
+        assert await Target("!room:example.org", scope=SupportScope.matrix).select() is matrix_bot
 
         target1 = Target("123", adapter=Onebot11Adapter)
         target2 = Target.group("456", scope=SupportScope.qq_client, platform="chronocat")
