@@ -2,7 +2,7 @@ from unittest.mock import ANY
 
 import pytest
 from nonebot import get_adapter
-from nonebot.adapters.matrix import Adapter, Bot, Message, MessageEvent, MessageSegment
+from nonebot.adapters.matrix import Adapter, Message, MessageEvent, MessageSegment
 from nonebot.adapters.matrix.api.model import WhoamiResponse
 from nonebot.adapters.matrix.bot import Bot as MatrixBot
 from nonebot.adapters.matrix.config import BotInfo
@@ -27,7 +27,7 @@ def make_message_event(message: Message | None = None, reply: str | None = None)
 
 
 def test_matrix_builder_and_export():
-    from nonebot_plugin_alconna import At, Image, Reply, Text, UniMessage
+    from nonebot_plugin_alconna import At, Image, Reply, Text, UniMessage, Voice
     from nonebot_plugin_alconna.uniseg.adapters.matrix.builder import MatrixMessageBuilder
 
     builder = MatrixMessageBuilder()
@@ -38,6 +38,13 @@ def test_matrix_builder_and_export():
                 MessageSegment.mention_user("@alice:example.org", "Alice"),
                 MessageSegment.reply("$reply:example.org"),
                 MessageSegment.image("mxc://example.org/image", body="image.png"),
+                MessageSegment.voice(
+                    "mxc://example.org/voice",
+                    duration=952,
+                    filename="Voice message.ogg",
+                    body="Voice message",
+                    content_type="audio/ogg",
+                ),
             ]
         )
     )
@@ -47,23 +54,143 @@ def test_matrix_builder_and_export():
     assert isinstance(segs[2], Reply)
     assert segs[2].id == "$reply:example.org"
     assert segs[2].origin == MessageSegment.reply("$reply:example.org")
-    assert segs[3] == Image(url="mxc://example.org/image", name="image.png")
+    assert segs[3] == Image(url="mxc://example.org/image", mimetype="image/png", name="image.png")
+    assert segs[4] == Voice(
+        url="mxc://example.org/voice",
+        duration=0.952,
+        mimetype="audio/ogg",
+        name="Voice message.ogg",
+    )
 
     exported = (
-        UniMessage.text("hello")
-        .at("@alice:example.org")
-        .reply("$reply:example.org")
-        .image(url="mxc://example.org/image", name="image.png")
-        .export_sync(adapter="Matrix")
+        UniMessage.text("hello").at("@alice:example.org").reply("$reply:example.org").export_sync(adapter="Matrix")
     )
     assert exported == Message(
         [
             MessageSegment.text("hello"),
             MessageSegment.mention_user("@alice:example.org"),
             MessageSegment.reply("$reply:example.org"),
-            MessageSegment.image("mxc://example.org/image"),
         ]
     )
+
+
+def test_matrix_builder_preserves_media_metadata_and_room_mention():
+    from nonebot_plugin_alconna import AtAll, Audio, File, Image, Text, Video
+    from nonebot_plugin_alconna.uniseg.adapters.matrix.builder import MatrixMessageBuilder
+
+    segments = MatrixMessageBuilder().generate(
+        Message(
+            [
+                MessageSegment.mention_room(),
+                MessageSegment.sticker(
+                    "mxc://example.org/sticker",
+                    body="sticker.webp",
+                    content_type="image/webp",
+                    info={"w": 128, "h": 64},
+                ),
+                MessageSegment.audio(
+                    "mxc://example.org/audio",
+                    body="audio.ogg",
+                    content_type="audio/ogg",
+                    info={"duration": 3000},
+                ),
+                MessageSegment.video(
+                    "mxc://example.org/video",
+                    body="video.mp4",
+                    content_type="video/mp4",
+                    info={"duration": 2000},
+                ),
+                MessageSegment.file(
+                    "mxc://example.org/file",
+                    body="document.pdf",
+                    content_type="application/pdf",
+                ),
+            ]
+        )
+    )
+
+    assert segments[0] == AtAll()
+    assert segments[1] == Image(
+        url="mxc://example.org/sticker",
+        mimetype="image/webp",
+        name="sticker.webp",
+        width=128,
+        height=64,
+        sticker=True,
+    )
+    assert segments[2] == Audio(url="mxc://example.org/audio", mimetype="audio/ogg", name="audio.ogg", duration=3)
+    assert segments[3] == Video(url="mxc://example.org/video", mimetype="video/mp4", name="video.mp4", duration=2)
+    assert segments[4] == File(url="mxc://example.org/file", mimetype="application/pdf", name="document.pdf")
+
+    styled = MatrixMessageBuilder().generate(Message([MessageSegment.notice("notice"), MessageSegment.emote("waves")]))
+    assert styled == [Text("notice", {(0, 6): ["notice"]}), Text("waves", {(0, 5): ["emote"]})]
+
+
+@pytest.mark.asyncio()
+async def test_matrix_exporter_sends_room_mention_and_sticker():
+    from nonebot_plugin_alconna import AtAll, Image, Text
+    from nonebot_plugin_alconna.uniseg.adapters.matrix.exporter import MatrixMessageExporter
+
+    exporter = MatrixMessageExporter()
+    mention = await exporter.export([AtAll()], None, False)
+    assert mention[0].type == "mention_room"
+    sticker = await exporter.export([Image(raw=b"webp", sticker=True)], None, False)
+    assert sticker[0].type == "sticker"
+    assert sticker[0].data["content"] == b"webp"
+    notice = await exporter.export([Text("notice", {(0, 6): ["notice"]})], None, False)
+    emote = await exporter.export([Text("waves", {(0, 5): ["emote"]})], None, False)
+    assert notice[0].type == "notice"
+    assert emote[0].type == "emote"
+
+
+@pytest.mark.asyncio()
+async def test_matrix_media_export_downloads_mxc(app: App, monkeypatch: pytest.MonkeyPatch):
+    from nonebot_plugin_alconna import Audio, File, Image, Video, Voice
+    from nonebot_plugin_alconna.uniseg.adapters.matrix.exporter import MatrixMessageExporter
+
+    async with app.test_api() as ctx:
+        adapter = get_adapter(Adapter)
+        bot = ctx.create_bot(
+            base=MatrixBot,
+            adapter=adapter,
+            self_id="@bot:example.org",
+            bot_info=BotInfo(
+                homeserver="https://matrix.example.org",
+                access_token="test-token",
+                user_id="@bot:example.org",
+            ),
+            self_info=WhoamiResponse(user_id="@bot:example.org"),
+        )
+
+        async def download_media(*, server_name: str, media_id: str):
+            assert (server_name, media_id) == ("example.org", "media")
+            return b"media"
+
+        monkeypatch.setattr(bot, "download_media", download_media)
+        exporter = MatrixMessageExporter()
+        segments = [
+            Image(url="mxc://example.org/media", mimetype="image/png"),
+            File(url="mxc://example.org/media", mimetype="application/pdf"),
+            Audio(url="mxc://example.org/media", mimetype="audio/ogg"),
+            Video(url="mxc://example.org/media", mimetype="video/mp4"),
+            Voice(url="mxc://example.org/media", duration=0.952, mimetype="audio/ogg"),
+        ]
+        for segment in segments:
+            exported = await exporter.export([segment], bot, False)
+            assert exported[0].data["content"] == b"media"
+            assert exported[0].data["url"] is None
+            assert exported[0].data["content_type"] == segment.mimetype
+            assert exported[0].data["info"]["mimetype"] == segment.mimetype
+
+        voice = await exporter.export(
+            [Voice(raw=b"voice", duration=0.952, name="Voice message.ogg", mimetype="audio/ogg")],
+            bot,
+            False,
+        )
+        assert voice[0].type == "voice"
+        assert voice[0].data["duration"] == 952
+        assert voice[0].data["content_type"] == "audio/ogg"
+        assert voice[0].data["info"]["mimetype"] == "audio/ogg"
 
 
 @pytest.mark.asyncio()
@@ -75,20 +202,30 @@ async def test_matrix_reply_and_send(app: App):
 
     async with app.test_api() as ctx:
         adapter = get_adapter(Adapter)
-        bot = ctx.create_bot(base=MatrixBot, adapter=adapter, self_id="@bot:example.org", bot_info=BotInfo(homeserver="https://matrix.example.org", access_token="test-token", user_id="@bot:example.org"), self_info=WhoamiResponse(user_id="@bot:example.org"))
+        bot = ctx.create_bot(
+            base=MatrixBot,
+            adapter=adapter,
+            self_id="@bot:example.org",
+            bot_info=BotInfo(
+                homeserver="https://matrix.example.org", access_token="test-token", user_id="@bot:example.org"
+            ),
+            self_info=WhoamiResponse(user_id="@bot:example.org"),
+        )
         event = make_message_event(reply="$origin:example.org")
 
         builder = MatrixMessageBuilder()
         assert await builder.extract_reply(event, bot) == Reply("$origin:example.org")
 
         exporter = MatrixMessageExporter()
+        bot._encryption_states["!room:example.org"] = None
         ctx.should_call_send(event, Message(MessageSegment.text("hello")), bot=bot, txn_id="txn-id")
         await exporter.send_to(event, bot, Message(MessageSegment.text("hello")), txn_id="txn-id")
 
         ctx.should_call_api(
-            "send_message",
+            "send_event",
             {
                 "room_id": "!room:example.org",
+                "event_type": "m.room.message",
                 "txn_id": "txn-id",
                 "content": {"msgtype": "m.text", "body": "hello"},
             },
