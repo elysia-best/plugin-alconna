@@ -43,6 +43,25 @@ async def image_fetch(event: Event, bot: Bot, state: T_State, img: Image, **kwar
     if img.path:
         return Path(img.path).read_bytes()
     adapter_name = bot.adapter.get_name()
+    if adapter_name == "Matrix":
+        from nonebot.adapters.matrix.bot import Bot as MatrixBot
+        from nonebot.adapters.matrix.message import MessageSegment
+
+        if not isinstance(bot, MatrixBot):
+            return None
+
+        origin = img.origin
+        if isinstance(origin, MessageSegment) and isinstance(origin.data.get("file"), dict):
+            return await bot.encryption().download_encrypted_file(origin.data["file"])
+
+        if img.url and img.url.startswith("mxc://"):
+            try:
+                server_name, media_id = img.url[6:].split("/", 1)
+            except ValueError:
+                return None
+            content = await bot.download_media(server_name=server_name, media_id=media_id)
+            return content if isinstance(content, bytes) else None
+
     if adapter_name == "RedProtocol":
         origin = img.origin
         if TYPE_CHECKING:

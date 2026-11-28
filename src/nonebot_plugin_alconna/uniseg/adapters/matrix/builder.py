@@ -1,8 +1,9 @@
 from typing import TYPE_CHECKING
 
 from nonebot.adapters import Bot, Event
+from nonebot.adapters.matrix.bot import Bot as MatrixBot
 from nonebot.adapters.matrix.event import MessageEvent
-from nonebot.adapters.matrix.message import MessageSegment
+from nonebot.adapters.matrix.message import MessageSegment, message_from_content
 
 from nonebot_plugin_alconna.uniseg.builder import MessageBuilder, build
 from nonebot_plugin_alconna.uniseg.constraint import SupportAdapter
@@ -124,6 +125,21 @@ class MatrixMessageBuilder(MessageBuilder[MessageSegment]):
     async def extract_reply(self, event: Event, bot: Bot):
         if TYPE_CHECKING:
             assert isinstance(event, MessageEvent)
-        if isinstance(event, MessageEvent) and event.reply:
-            return Reply(str(event.reply))
-        return None
+        if not isinstance(event, MessageEvent) or not event.reply:
+            return None
+
+        reply_id = str(event.reply)
+        if not isinstance(bot, MatrixBot) or event.room_id is None:
+            return Reply(reply_id)
+
+        target = await bot.get_room_event(room_id=event.room_id, event_id=reply_id)
+        if target.type == "m.room.encrypted":
+            if bot.crypto is None:
+                return Reply(reply_id)
+            target = await bot.crypto.decrypt_room_event(target, room_id=str(event.room_id))
+            if target is None:
+                return Reply(reply_id)
+
+        if target.type != "m.room.message":
+            return Reply(reply_id)
+        return Reply(reply_id, message_from_content(target.content), origin=target)

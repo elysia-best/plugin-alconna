@@ -194,8 +194,114 @@ async def test_matrix_media_export_downloads_mxc(app: App, monkeypatch: pytest.M
 
 
 @pytest.mark.asyncio()
+async def test_matrix_image_fetch_downloads_mxc(app: App, monkeypatch: pytest.MonkeyPatch):
+    from nonebot_plugin_alconna import Image
+    from nonebot_plugin_alconna.uniseg import image_fetch
+
+    async with app.test_api() as ctx:
+        adapter = get_adapter(Adapter)
+        bot = ctx.create_bot(
+            base=MatrixBot,
+            adapter=adapter,
+            self_id="@bot:example.org",
+            bot_info=BotInfo(
+                homeserver="https://matrix.example.org",
+                access_token="test-token",
+                user_id="@bot:example.org",
+            ),
+            self_info=WhoamiResponse(user_id="@bot:example.org"),
+        )
+
+        async def download_media(*, server_name: str, media_id: str):
+            assert (server_name, media_id) == ("example.org", "media")
+            return b"image-bytes"
+
+        monkeypatch.setattr(bot, "download_media", download_media)
+        image = Image(url="mxc://example.org/media")
+        assert await image_fetch(make_message_event(), bot, {}, image) == b"image-bytes"
+
+        async def request(_request):
+            return type("Response", (), {"content": b"external-image-bytes"})()
+
+        monkeypatch.setattr(adapter, "request", request)
+        external_image = Image(url="https://example.org/image.png")
+        assert await image_fetch(make_message_event(), bot, {}, external_image) == b"external-image-bytes"
+
+        class CryptoStub:
+            ready = True
+
+            async def download_encrypted_file(self, file: dict[str, str]) -> bytes:
+                assert file == {"url": "mxc://example.org/encrypted"}
+                return b"encrypted-image-bytes"
+
+        bot.crypto = CryptoStub()
+        origin = MessageSegment.image("mxc://example.org/encrypted")
+        origin.data["file"] = {"url": "mxc://example.org/encrypted"}
+        encrypted_image = Image()
+        encrypted_image.origin = origin
+        assert await image_fetch(make_message_event(), bot, {}, encrypted_image) == b"encrypted-image-bytes"
+
+
+@pytest.mark.asyncio()
+async def test_matrix_extract_reply_decrypts_encrypted_target(app: App):
+    from nonebot.adapters.matrix.api.model import RawMatrixEvent
+
+    from nonebot_plugin_alconna.uniseg.adapters.matrix.builder import MatrixMessageBuilder
+
+    class CryptoStub:
+        async def decrypt_room_event(self, raw, *, room_id: str):
+            assert room_id == "!room:example.org"
+            assert raw.type == "m.room.encrypted"
+            return RawMatrixEvent.model_validate(
+                {
+                    "type": "m.room.message",
+                    "event_id": "$origin:example.org",
+                    "sender": "@alice:example.org",
+                    "room_id": room_id,
+                    "content": {"msgtype": "m.text", "body": "decrypted content"},
+                }
+            )
+
+    async with app.test_api() as ctx:
+        adapter = get_adapter(Adapter)
+        bot = ctx.create_bot(
+            base=MatrixBot,
+            adapter=adapter,
+            self_id="@bot:example.org",
+            bot_info=BotInfo(
+                homeserver="https://matrix.example.org",
+                access_token="test-token",
+                user_id="@bot:example.org",
+            ),
+            self_info=WhoamiResponse(user_id="@bot:example.org"),
+        )
+        bot.crypto = CryptoStub()
+        ctx.should_call_api(
+            "get_room_event",
+            {"room_id": "!room:example.org", "event_id": "$origin:example.org"},
+            RawMatrixEvent.model_validate(
+                {
+                    "type": "m.room.encrypted",
+                    "event_id": "$origin:example.org",
+                    "sender": "@alice:example.org",
+                    "room_id": "!room:example.org",
+                    "content": {},
+                }
+            ),
+        )
+
+        reply = await MatrixMessageBuilder().extract_reply(make_message_event(reply="$origin:example.org"), bot)
+        assert reply is not None
+        assert reply.id == "$origin:example.org"
+        assert reply.msg == Message("decrypted content")
+        assert reply.origin.type == "m.room.message"
+
+
+@pytest.mark.asyncio()
 async def test_matrix_reply_and_send(app: App):
-    from nonebot_plugin_alconna import Emoji, Reply
+    from nonebot.adapters.matrix.api.model import RawMatrixEvent
+
+    from nonebot_plugin_alconna import Emoji
     from nonebot_plugin_alconna.uniseg.adapters.matrix.builder import MatrixMessageBuilder
     from nonebot_plugin_alconna.uniseg.adapters.matrix.exporter import MatrixMessageExporter
     from nonebot_plugin_alconna.uniseg.target import Target
@@ -212,9 +318,38 @@ async def test_matrix_reply_and_send(app: App):
             self_info=WhoamiResponse(user_id="@bot:example.org"),
         )
         event = make_message_event(reply="$origin:example.org")
+        ctx.should_call_api(
+            "get_room_event",
+            {"room_id": "!room:example.org", "event_id": "$origin:example.org"},
+            RawMatrixEvent.model_validate(
+                {
+                    "type": "m.room.message",
+                    "event_id": "$origin:example.org",
+                    "sender": "@alice:example.org",
+                    "room_id": "!room:example.org",
+                    "content": {
+                        "msgtype": "m.sticker",
+                        "body": "smile.webp",
+                        "url": "mxc://example.org/sticker",
+                        "info": {"mimetype": "image/webp"},
+                    },
+                }
+            ),
+        )
 
         builder = MatrixMessageBuilder()
-        assert await builder.extract_reply(event, bot) == Reply("$origin:example.org")
+        reply = await builder.extract_reply(event, bot)
+        assert reply is not None
+        assert reply.id == "$origin:example.org"
+        assert reply.msg == Message(
+            MessageSegment.sticker(
+                "mxc://example.org/sticker",
+                body="smile.webp",
+                content_type="image/webp",
+                info={"mimetype": "image/webp"},
+            )
+        )
+        assert reply.origin.event_id == "$origin:example.org"
 
         exporter = MatrixMessageExporter()
         bot._encryption_states["!room:example.org"] = None
